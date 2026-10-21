@@ -1,19 +1,22 @@
-# Construit l'image du terminal MT5 (docker/mt5) sur les serveurs de GitHub et la publie dans le
+# Construit l'image du terminal MT5 de Vigie sur les serveurs de GitHub et la publie dans le
 # registre privé de GitHub (GHCR). Coolify télécharge ensuite l'image toute prête au lieu de
 # reconstruire Wine sur le serveur (téléchargement WineHQ très lent depuis le serveur).
 #
-# Déclenchement : modification de docker/mt5/** sur main, ou à la main (onglet Actions →
+# Dépôt PUBLIC (minutes GitHub Actions gratuites) ; l'image publiée reste privée sur GHCR.
+# Déclenchement : modification de l'image sur main, ou à la main (onglet Actions →
 # « Image MT5 » → Run workflow). Étiquettes publiées :
 #   ghcr.io/softartisan-inc/vigie-mt5:wine-<WINE_VERSION>   (utilisée par docker-compose.yml)
 #   ghcr.io/softartisan-inc/vigie-mt5:sha-<commit>          (traçabilité)
-# Voir docs/deploiement-coolify.md, « Image MT5 préconstruite (GHCR) ».
+# Voir README.md et, dans vigie-trading, docs/deploiement-coolify.md (« Image MT5 préconstruite (GHCR) »).
 name: Image MT5
 
 on:
   push:
     branches: [main]
     paths:
-      - "docker/mt5/**"
+      - "Dockerfile"
+      - "start.sh"
+      - "upgrade-wine.sh"
       - ".github/workflows/mt5-image.yml"
   workflow_dispatch:
 
@@ -36,7 +39,7 @@ jobs:
       - name: Version de Wine épinglée
         id: meta
         run: |
-          v="$(sed -n 's/^ARG WINE_VERSION=//p' docker/mt5/Dockerfile | head -n1)"
+          v="$(sed -n 's/^ARG WINE_VERSION=//p' Dockerfile | head -n1)"
           test -n "$v"
           echo "wine=$v" >> "$GITHUB_OUTPUT"
           echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/vigie-mt5" >> "$GITHUB_OUTPUT"
@@ -53,7 +56,7 @@ jobs:
       - name: Construction et envoi
         uses: docker/build-push-action@v6
         with:
-          context: docker/mt5
+          context: .
           push: true
           tags: |
             ${{ steps.meta.outputs.image }}:wine-${{ steps.meta.outputs.wine }}
