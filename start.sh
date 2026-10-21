@@ -10,7 +10,8 @@
 #   4. Terminal lancé s'il ne tourne pas.
 #   5. Pont RPyC (port 8001) : Python Windows préinstallé dans l'image (/opt/winpython), lancé et
 #      relancé automatiquement s'il s'arrête. Vigie connecte le compte (MT5_LOGIN…) par ce pont.
-# Variables : MT5_WINE_WINDOWS_VERSION (win10 par défaut à la création du préfixe), MT5_CMD_OPTIONS
+# Variables : MT5_SETUP_URL (installeur du courtier, défaut : terminal générique MetaQuotes),
+# MT5_WINE_WINDOWS_VERSION (win10 par défaut à la création du préfixe), MT5_CMD_OPTIONS
 # (options de terminal64.exe), MT5_BRIDGE_PORT (8001).
 
 export WINEPREFIX="${WINEPREFIX:-/config/.wine}"
@@ -54,37 +55,68 @@ if [ -n "$winver" ]; then
         && log "   version Windows du préfixe : $winver" || log "   impossible de régler la version Windows ($winver)"
 fi
 
-# 3. MetaTrader 5.
-if [ -f "$MT5_EXE" ]; then
-    log "3. MetaTrader 5 déjà installé"
+# 3. MetaTrader 5. MT5_SETUP_URL : installeur du courtier (ex. HFM), dont le terminal connaît déjà les
+#    serveurs du courtier ; le terminal générique de MetaQuotes ne les trouve pas toujours sous Wine.
+#    Le terminal installé par l'URL en vigueur est mémorisé ($WINEPREFIX/.vigie-mt5-dir) : changer
+#    d'URL installe le nouveau terminal (dans son propre dossier) au démarrage suivant.
+DEFAULT_SETUP_URL=https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe
+SETUP_URL="${MT5_SETUP_URL:-$DEFAULT_SETUP_URL}"
+STAMP_URL="$WINEPREFIX/.vigie-mt5-setup-url"
+STAMP_DIR="$WINEPREFIX/.vigie-mt5-dir"
+PF="$WINEPREFIX/drive_c/Program Files"
+list_terminals() { find "$PF" -maxdepth 2 -name terminal64.exe 2>/dev/null | sort; }
+
+if [ ! -f "$STAMP_URL" ] && [ "$SETUP_URL" = "$DEFAULT_SETUP_URL" ] && [ -f "$MT5_EXE" ]; then
+    echo "$SETUP_URL" > "$STAMP_URL"; echo "$MT5_DIR" > "$STAMP_DIR"     # installation générique existante
+fi
+if [ -f "$STAMP_URL" ] && [ "$(cat "$STAMP_URL")" = "$SETUP_URL" ] && [ -f "$(cat "$STAMP_DIR" 2>/dev/null)/terminal64.exe" ]; then
+    MT5_DIR="$(cat "$STAMP_DIR")"
+    log "3. MetaTrader 5 déjà installé ($MT5_DIR)"
 else
-    log "3. Installation de MetaTrader 5 (5 à 15 min)…"
-    setup="$WINEPREFIX/drive_c/mt5setup.exe"
-    if curl -fsSL --retry 3 -o "$setup" https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe; then
+    log "3. Installation de MetaTrader 5 depuis $SETUP_URL (5 à 15 min)…"
+    before="$(list_terminals)"
+    setup="$WINEPREFIX/drive_c/vigie-mt5setup.exe"
+    if curl -fsSL --retry 3 -o "$setup" "$SETUP_URL"; then
         wine "$setup" /auto &
         setup_pid=$!
+        new_exe=""
         for _ in $(seq 1 180); do              # jusqu'à 30 min
-            [ -f "$MT5_EXE" ] && break
+            new_exe="$(comm -13 <(echo "$before") <(list_terminals) | head -n 1)"
+            [ -n "$new_exe" ] && break
+            # réinstallation dans un dossier déjà présent : on se contente de la fin de l'installeur
+            if ! kill -0 "$setup_pid" 2>/dev/null; then break; fi
             sleep 10
         done
-        if [ -f "$MT5_EXE" ]; then
-            log "   terminal64.exe installé ; arrêt de l'installeur dans 60 s (il ne rend pas toujours la main)"
+        [ -z "$new_exe" ] && new_exe="$(list_terminals | tail -n 1)"
+        if [ -n "$new_exe" ]; then
+            log "   terminal installé : $new_exe ; arrêt de l'installeur dans 60 s (il ne rend pas toujours la main)"
             sleep 60
+            MT5_DIR="$(dirname "$new_exe")"
+            echo "$SETUP_URL" > "$STAMP_URL"; echo "$MT5_DIR" > "$STAMP_DIR"
         else
-            log "   ATTENTION : terminal64.exe absent après 30 min"
+            log "   ATTENTION : aucun terminal64.exe trouvé après l'installation"
         fi
-        pkill -f mt5setup.exe 2>/dev/null; kill "$setup_pid" 2>/dev/null
+        pkill -f vigie-mt5setup.exe 2>/dev/null; pkill -f mt5setup.exe 2>/dev/null; kill "$setup_pid" 2>/dev/null
         rm -f "$setup"
     else
-        log "   ATTENTION : téléchargement de mt5setup.exe impossible (download.mql5.com injoignable ?)"
+        log "   ATTENTION : téléchargement impossible ($SETUP_URL)"
     fi
 fi
+MT5_EXE="$MT5_DIR/terminal64.exe"
 
-# 4. Terminal.
-if pgrep -f terminal64.exe >/dev/null 2>&1; then
-    log "4. Terminal déjà lancé"
+# 4. Terminal : seul le terminal retenu tourne (un autre terminal ferait répondre la mauvaise
+#    installation au module Python MetaTrader5).
+mt5_name="$(basename "$MT5_DIR")"
+mt5_pat="\\${mt5_name}\\terminal64"          # ex. \HFM MetaTrader 5\terminal64 (ligne de commande Wine)
+others="$(pgrep -af terminal64.exe | grep -F ':\' | grep -vF "$mt5_pat" | awk '{print $1}')"
+if [ -n "$others" ]; then
+    log "   arrêt d'un autre terminal en cours ($(echo $others))"
+    kill $others 2>/dev/null; sleep 5
+fi
+if pgrep -af terminal64.exe | grep -qF "$mt5_pat"; then
+    log "4. Terminal déjà lancé ($mt5_name)"
 elif [ -f "$MT5_EXE" ]; then
-    log "4. Lancement du terminal"
+    log "4. Lancement du terminal ($MT5_EXE)"
     # shellcheck disable=SC2086
     wine "$MT5_EXE" ${MT5_CMD_OPTIONS:-} >/dev/null 2>&1 &
     sleep 20
