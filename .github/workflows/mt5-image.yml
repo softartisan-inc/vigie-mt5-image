@@ -1,0 +1,73 @@
+# Construit l'image du terminal MT5 (docker/mt5) sur les serveurs de GitHub et la publie dans le
+# registre privé de GitHub (GHCR). Coolify télécharge ensuite l'image toute prête au lieu de
+# reconstruire Wine sur le serveur (téléchargement WineHQ très lent depuis le serveur).
+#
+# Déclenchement : modification de docker/mt5/** sur main, ou à la main (onglet Actions →
+# « Image MT5 » → Run workflow). Étiquettes publiées :
+#   ghcr.io/softartisan-inc/vigie-mt5:wine-<WINE_VERSION>   (utilisée par docker-compose.yml)
+#   ghcr.io/softartisan-inc/vigie-mt5:sha-<commit>          (traçabilité)
+# Voir docs/deploiement-coolify.md, « Image MT5 préconstruite (GHCR) ».
+name: Image MT5
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docker/mt5/**"
+      - ".github/workflows/mt5-image.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: mt5-image
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Construction et publication
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version de Wine épinglée
+        id: meta
+        run: |
+          v="$(sed -n 's/^ARG WINE_VERSION=//p' docker/mt5/Dockerfile | head -n1)"
+          test -n "$v"
+          echo "wine=$v" >> "$GITHUB_OUTPUT"
+          echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/vigie-mt5" >> "$GITHUB_OUTPUT"
+          echo "sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Construction et envoi
+        uses: docker/build-push-action@v6
+        with:
+          context: docker/mt5
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.image }}:wine-${{ steps.meta.outputs.wine }}
+            ${{ steps.meta.outputs.image }}:sha-${{ steps.meta.outputs.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Contrôle de la mise à niveau de Wine
+        run: |
+          img="${{ steps.meta.outputs.image }}:wine-${{ steps.meta.outputs.wine }}"
+          docker pull "$img"
+          docker run --rm --entrypoint /bin/bash "$img" -c 'wine --version; grep -E "^(STATUS|RAISON)=" /Metatrader/wine-upgrade.log' | tee /tmp/wine.txt
+          if ! grep -q '^STATUS=ok' /tmp/wine.txt; then
+            echo "::error::La mise à niveau de Wine a échoué dans l'image : voir /Metatrader/wine-upgrade.log"
+            docker run --rm --entrypoint /bin/bash "$img" -c 'tail -n 60 /Metatrader/wine-upgrade.log'
+            exit 1
+          fi
