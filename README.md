@@ -16,7 +16,8 @@ Wine ≥ 11.6 est obligatoire : la build actuelle de `terminal64.exe` s'arrête 
 |---|---|
 | `Dockerfile` | dérive de `gmag11/metatrader5_vnc:2.3` (épinglée) et remplace Wine stable par WineHQ devel (`ARG WINE_VERSION`) |
 | `upgrade-wine.sh` | mise à niveau de Wine ; retient une version publiée à la fois en amd64 et en i386, ≥ 11.6 ; n'échoue jamais, résultat dans `/Metatrader/wine-upgrade.log` (`STATUS=ok` ou `STATUS=failed` + `RAISON=`) |
-| `start.sh` | démarrage : affiche le résultat de la mise à niveau, met à jour le préfixe Wine (`wineboot -u`), applique `MT5_WINE_WINDOWS_VERSION` si défini, puis lance le script d'origine |
+| `start.sh` | démarrage complet (remplace le script d'origine) : préfixe Wine, installation de MT5 si absent (installeur arrêté dès que `terminal64.exe` existe), terminal, puis pont RPyC surveillé et relancé ; journal `/config/vigie-mt5.log` |
+| `vigie_bridge.py` | pont RPyC « classic » (port 8001) exécuté par le Python Windows préinstallé dans `/opt/winpython` (Python 3.11 embarquable + `MetaTrader5` + `rpyc`, installés à la construction) |
 | `workflow/mt5-image.yml` | modèle du workflow GitHub Actions, à copier dans `.github/workflows/mt5-image.yml` |
 
 ## Images publiées
@@ -35,7 +36,7 @@ Les outils d'automatisation n'ont pas le droit de créer un workflow :
 3. Collez-y le contenu de `workflow/mt5-image.yml`.
 4. *Commit changes* sur `main`.
 
-Le workflow se lance ensuite à chaque modification de `Dockerfile`, `start.sh` ou `upgrade-wine.sh` sur `main`. On peut aussi le lancer à la main : *Actions* → « Image MT5 » → *Run workflow*.
+Le workflow se lance ensuite à chaque modification de `Dockerfile`, `start.sh` ou `upgrade-wine.sh` sur `main` (une modification de `vigie_bridge.py` seule demande un lancement manuel, ou l'ajout de ce fichier aux `paths` du workflow). On peut aussi le lancer à la main : *Actions* → « Image MT5 » → *Run workflow*.
 
 ## Source de référence
 

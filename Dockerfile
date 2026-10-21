@@ -6,8 +6,9 @@
 # appels système directs que Wine ne gère qu'à partir de 11.6 (Wine bug 58043, Syscall User
 # Dispatch : noyau hôte ≥ 5.11, `prctl` autorisé par seccomp, ce qui est le cas par défaut avec Docker).
 #
-# Inchangé : démarrage (KasmVNC sur le port 3000, /defaults/autostart → /Metatrader/start.sh),
-# pont mt5linux/RPyC sur le port 8001, WINEPREFIX=/config/.wine, volume /config.
+# Inchangé : KasmVNC sur le port 3000, /defaults/autostart → /Metatrader/start.sh, WINEPREFIX=/config/.wine,
+# volume /config. Remplacés : Python Windows et pont RPyC (port 8001) préinstallés dans /opt/winpython ;
+# démarrage piloté par docker/mt5/start.sh (journal /config/vigie-mt5.log).
 # Voir docs/deploiement-coolify.md (« Terminal MT5 : image construite et Wine ») et docs/reference.md.
 
 # Tag 2.3 (20/12/2025) = « latest » à la date de l'épinglage. Pour épingler aussi le digest :
@@ -48,19 +49,32 @@ COPY --chmod=755 upgrade-wine.sh /usr/local/bin/vigie-upgrade-wine
 RUN /usr/local/bin/vigie-upgrade-wine "${WINE_VERSION}" "${WINE_DEBIAN_SUITE}" "${WINE_PACKAGE_REVISION}" "${WINEHQ_REPO_FINGERPRINT}"; \
     rm -rf /tmp/* /var/tmp/*
 
-# Script de démarrage : celui de l'image d'origine est conservé sous start-upstream.sh, deux réglages
-# y sont ajustés (version Windows à l'installation, Wine Mono aligné sur Wine), et start.sh prépare
-# le préfixe avant de lui passer la main. Le chemin /Metatrader/start.sh est inchangé : il est aussi
-# celui inscrit dans /config/.config/openbox/autostart des volumes existants.
+# Python Windows « embarquable » + bibliothèques, PRÉINSTALLÉS dans l'image (aucune installation au
+# démarrage, aucun installeur Windows exécuté sous Wine). Les paquets Windows (wheels win_amd64) sont
+# installés depuis Linux par `pip --target --platform win_amd64`. Le pont RPyC « classic » (port 8001)
+# tourne dans ce Python sous Wine et expose le module MetaTrader5 à Vigie (rpyc.classic.connect).
+ARG WIN_PYTHON_VERSION=3.11.9
+ARG WIN_PYTHON_TAG=311
+ARG RPYC_VERSION=6.0.2
 RUN set -eux; \
-    mv /Metatrader/start.sh /Metatrader/start-upstream.sh; \
-    if grep -q '/d "win10"' /Metatrader/start-upstream.sh; then \
-        sed -i 's|/d "win10"|/d "${MT5_WINE_WINDOWS_VERSION:-win10}"|' /Metatrader/start-upstream.sh; \
-    else echo "AVERTISSEMENT : réglage win10 introuvable dans start.sh d'origine (non modifié)"; fi; \
-    if grep -q '^mono_url=' /Metatrader/start-upstream.sh; then \
-        sed -i "s|^mono_url=.*|mono_url=\"https://dl.winehq.org/wine/wine-mono/${WINE_MONO_VERSION}/wine-mono-${WINE_MONO_VERSION}-x86.msi\"|" /Metatrader/start-upstream.sh; \
-    else echo "AVERTISSEMENT : mono_url introuvable dans start.sh d'origine (non modifié)"; fi; \
-    chmod 755 /Metatrader/start-upstream.sh
+    d=/opt/winpython; mkdir -p "$d"; \
+    curl -fsSL --retry 3 "https://www.python.org/ftp/python/${WIN_PYTHON_VERSION}/python-${WIN_PYTHON_VERSION}-embed-amd64.zip" -o /tmp/py.zip; \
+    python3 -m zipfile -e /tmp/py.zip "$d"; rm -f /tmp/py.zip; \
+    pth="$d/python${WIN_PYTHON_TAG}._pth"; test -f "$pth"; \
+    printf 'python%s.zip\r\n.\r\nLib\\site-packages\r\nimport site\r\n' "${WIN_PYTHON_TAG}" > "$pth"; \
+    python3 -m pip install --no-cache-dir --break-system-packages --no-warn-conflicts \
+        --target "$d/Lib/site-packages" --platform win_amd64 --python-version "${WIN_PYTHON_VERSION%.*}" \
+        --implementation cp --only-binary=:all: MetaTrader5 "rpyc==${RPYC_VERSION}" python-dateutil; \
+    test -d "$d/Lib/site-packages/MetaTrader5"; test -d "$d/Lib/site-packages/rpyc"; \
+    ls "$d/Lib/site-packages" | grep -i dist-info > /Metatrader/winpython-packages.txt; \
+    chmod -R a+rX "$d"
+COPY --chmod=644 vigie_bridge.py /opt/winpython/vigie_bridge.py
+
+# Démarrage : /Metatrader/start.sh (chemin inscrit dans /config/.config/openbox/autostart des volumes
+# existants) remplace le script d'origine : préfixe Wine, installation de MT5 si absent (sans blocage
+# sur l'installeur), lancement du terminal, puis pont RPyC surveillé et relancé s'il s'arrête.
+# Journal : /config/vigie-mt5.log. Le script d'origine reste disponible sous /Metatrader/start-upstream.sh.
+RUN mv /Metatrader/start.sh /Metatrader/start-upstream.sh && chmod 755 /Metatrader/start-upstream.sh
 COPY --chmod=755 start.sh /Metatrader/start.sh
 
 EXPOSE 3000 8001
